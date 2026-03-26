@@ -2,17 +2,19 @@ package com.snapclean;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.view.KeyEvent;
-import android.view.WindowManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,6 +29,8 @@ public class MainActivity extends Activity {
     private static final String LOGIN_URL = "https://accounts.snapchat.com/v2/login?continue=https%3A%2F%2Fwww.snapchat.com%2Fweb%2F";
     private static final String WEB_APP_URL = "https://www.snapchat.com/web/";
     private static final int PERMISSION_REQUEST_CODE = 1001;
+    private static final int FILE_CHOOSER_REQUEST = 1002;
+    private ValueCallback<Uri[]> fileUploadCallback;
 
     /**
      * Blocked path segments in navigations. We use a blacklist approach
@@ -111,7 +115,15 @@ public class MainActivity extends Activity {
         + "}"
         + "Object.defineProperty(navigator, 'plugins', {"
         + "  get: function() { return [1,2,3]; }"
-        + "});";
+        + "});"
+        // Override permissions.query to report camera/mic as granted
+        + "const origQuery = navigator.permissions.query.bind(navigator.permissions);"
+        + "navigator.permissions.query = function(desc) {"
+        + "  if (desc.name === 'camera' || desc.name === 'microphone') {"
+        + "    return Promise.resolve({state: 'granted', onchange: null});"
+        + "  }"
+        + "  return origQuery(desc);"
+        + "};";
 
     private class SnapCleanWebViewClient extends WebViewClient {
         @Override
@@ -154,6 +166,12 @@ public class MainActivity extends Activity {
      */
     private void injectContentBlocker(WebView view) {
         String css = String.join("",
+            // Contain everything within viewport
+            "html, body { overflow-x: hidden !important; max-width: 100vw !important; }",
+            "div[role=dialog], div[role=menu], div[role=listbox], ",
+            "div[role=presentation], div[style*=position] ",
+            "{ max-width: 100vw !important; right: auto !important; ",
+            "  overflow-x: auto !important; }",
             // Hide Discover/Spotlight navigation tabs and sections
             "[data-testid*='discover'],",
             "[data-testid*='spotlight'],",
@@ -180,9 +198,38 @@ public class MainActivity extends Activity {
 
     private class SnapCleanChromeClient extends WebChromeClient {
         @Override
-        public void onPermissionRequest(PermissionRequest request) {
-            // Grant camera/mic for video calls
-            request.grant(request.getResources());
+        public void onPermissionRequest(final PermissionRequest request) {
+            // Must grant on UI thread
+            runOnUiThread(() -> request.grant(request.getResources()));
+        }
+
+        @Override
+        public boolean onShowFileChooser(WebView view,
+                ValueCallback<Uri[]> filePathCallback,
+                FileChooserParams fileChooserParams) {
+            if (fileUploadCallback != null) {
+                fileUploadCallback.onReceiveValue(null);
+            }
+            fileUploadCallback = filePathCallback;
+            startActivityForResult(fileChooserParams.createIntent(), FILE_CHOOSER_REQUEST);
+            return true;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILE_CHOOSER_REQUEST) {
+            if (fileUploadCallback != null) {
+                Uri[] results = null;
+                if (resultCode == RESULT_OK && data != null) {
+                    String dataString = data.getDataString();
+                    if (dataString != null) {
+                        results = new Uri[]{Uri.parse(dataString)};
+                    }
+                }
+                fileUploadCallback.onReceiveValue(results);
+                fileUploadCallback = null;
+            }
         }
     }
 
