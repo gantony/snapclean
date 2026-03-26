@@ -33,9 +33,19 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileUploadCallback;
 
     /**
-     * Blocked path segments in navigations. We use a blacklist approach
-     * because Snapchat's auth flow touches many domains and a whitelist
-     * is too fragile.
+     * Domains allowed for navigation. Subresource loads (CSS, JS, images)
+     * are not affected - only top-level navigations (link clicks, redirects).
+     */
+    private static final List<String> ALLOWED_DOMAINS = Arrays.asList(
+        "snapchat.com",
+        "snap.com",
+        "sc-cdn.net",
+        "sc-static.net",
+        "accounts.snapchat.com"
+    );
+
+    /**
+     * Blocked path segments - even within allowed domains.
      */
     private static final List<String> BLOCKED_PATHS = Arrays.asList(
         "/discover",
@@ -43,7 +53,12 @@ public class MainActivity extends Activity {
         "/stories/discover",
         "/explore",
         "/subscriptions",
-        "/snap-star"
+        "/snap-star",
+        "/story/",
+        "/stories",
+        "/map",
+        "/lens",
+        "/plus"
     );
 
     private WebView webView;
@@ -89,7 +104,18 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new SnapCleanChromeClient());
     }
 
-    private boolean isUrlBlocked(String url) {
+    private boolean isDomainAllowed(String url) {
+        if (url == null) return false;
+        String lowerUrl = url.toLowerCase();
+        for (String domain : ALLOWED_DOMAINS) {
+            if (lowerUrl.contains(domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isPathBlocked(String url) {
         if (url == null) return false;
         String lowerUrl = url.toLowerCase();
         for (String blocked : BLOCKED_PATHS) {
@@ -129,9 +155,7 @@ public class MainActivity extends Activity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             String url = request.getUrl().toString();
-            if (isUrlBlocked(url)) {
-                return true; // block navigation
-            }
+
             // If Snapchat's JS redirects to the homepage (not logged in),
             // intercept and go to login instead.
             if (url.startsWith("https://www.snapchat.com/?") || url.equals("https://www.snapchat.com/")) {
@@ -143,7 +167,15 @@ public class MainActivity extends Activity {
                 view.loadUrl(WEB_APP_URL);
                 return true;
             }
-            return false; // allow everything else
+            // Block paths we don't want (discover, stories, spotlight, etc.)
+            if (isPathBlocked(url)) {
+                return true;
+            }
+            // Block any external domain (YouTube, TikTok, etc. from chat links)
+            if (!isDomainAllowed(url)) {
+                return true;
+            }
+            return false;
         }
 
         @Override
@@ -172,16 +204,9 @@ public class MainActivity extends Activity {
             "div[role=presentation], div[style*=position] ",
             "{ max-width: 100vw !important; right: auto !important; ",
             "  overflow-x: auto !important; }",
-            // Hide Discover/Spotlight navigation tabs and sections
-            "[data-testid*='discover'],",
-            "[data-testid*='spotlight'],",
-            "[data-testid*='stories-discover'],",
-            "[aria-label*='Discover'],",
-            "[aria-label*='Spotlight'],",
-            "[aria-label*='Subscribe'],",
-            "[href*='/discover'],",
-            "[href*='/spotlight']",
-            "{ display: none !important; }"
+            // Content blocking is handled by URL/domain filtering in
+            // shouldOverrideUrlLoading - no CSS hiding needed
+            ""
         );
 
         String js = "javascript:(function() {"
