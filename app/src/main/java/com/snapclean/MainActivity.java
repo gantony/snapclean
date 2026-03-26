@@ -191,31 +191,32 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * Hide known Discover/Spotlight UI elements via CSS injection.
-     * This is brittle (Snapchat can change class names) but provides
-     * an extra layer of defense.
-     */
     private void injectContentBlocker(WebView view) {
-        String css = String.join("",
-            // Contain everything within viewport
-            "html, body { overflow-x: hidden !important; max-width: 100vw !important; }",
-            "div[role=dialog], div[role=menu], div[role=listbox], ",
-            "div[role=presentation], div[style*=position] ",
-            "{ max-width: 100vw !important; right: auto !important; ",
-            "  overflow-x: auto !important; }",
-            // Content blocking is handled by URL/domain filtering in
-            // shouldOverrideUrlLoading - no CSS hiding needed
-            ""
-        );
-
-        String js = "javascript:(function() {"
-            + "var style = document.getElementById('snapclean-blocker');"
-            + "if (!style) {"
-            + "  style = document.createElement('style');"
-            + "  style.id = 'snapclean-blocker';"
-            + "  style.textContent = '" + css.replace("'", "\\'") + "';"
-            + "  document.head.appendChild(style);"
+        String js = "(function() {"
+            + "if (window._snapcleanDone) return;"
+            + "window._snapcleanDone = true;"
+            // Overflow fix
+            + "var s = document.createElement('style');"
+            + "s.textContent = 'html,body{overflow-x:hidden!important;max-width:100vw!important}"
+            + "div[role=dialog],div[role=menu],div[role=listbox],div[role=presentation]"
+            + "{max-width:100vw!important;right:auto!important;overflow-x:auto!important}';"
+            + "document.head.appendChild(s);"
+            // Block Stories/Spotlight buttons with a fixed overlay.
+            // Repositions on resize/rotate to always cover the buttons.
+            + "if (!document.getElementById('snapclean-overlay')) {"
+            + "  var ov = document.createElement('div');"
+            + "  ov.id = 'snapclean-overlay';"
+            + "  ov.style.cssText = 'position:fixed;z-index:999999;background:rgba(255,165,0,0.3);';"
+            + "  document.body.appendChild(ov);"
+            + "  function positionOverlay() {"
+            + "    var h = window.innerHeight;"
+            + "    ov.style.right = '0px';"
+            + "    ov.style.width = '80px';"
+            + "    if (h > 500) { ov.style.top = '310px'; ov.style.height = '130px'; }"
+            + "    else { ov.style.top = '115px'; ov.style.height = '125px'; }"
+            + "  }"
+            + "  positionOverlay();"
+            + "  window.addEventListener('resize', positionOverlay);"
             + "}"
             + "})()";
         view.evaluateJavascript(js, null);
