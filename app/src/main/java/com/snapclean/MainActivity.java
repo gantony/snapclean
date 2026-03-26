@@ -3,25 +3,20 @@ package com.snapclean;
 import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
-import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.view.KeyEvent;
-import android.view.View;
 import android.view.WindowManager;
-import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
 
 /**
  * SnapClean - a WebView wrapper for web.snapchat.com that blocks
@@ -29,27 +24,14 @@ import java.util.Set;
  */
 public class MainActivity extends Activity {
 
-    private static final String SNAPCHAT_WEB_URL = "https://web.snapchat.com/";
+    private static final String LOGIN_URL = "https://accounts.snapchat.com/v2/login?continue=https%3A%2F%2Fwww.snapchat.com%2Fweb%2F";
+    private static final String WEB_APP_URL = "https://www.snapchat.com/web/";
     private static final int PERMISSION_REQUEST_CODE = 1001;
 
     /**
-     * Allowed URL prefixes. Any navigation outside these is blocked.
-     * This is a whitelist approach - safer than trying to blacklist every
-     * bad URL Snapchat might add in the future.
-     */
-    private static final List<String> ALLOWED_PREFIXES = Arrays.asList(
-        "https://web.snapchat.com",
-        "https://accounts.snapchat.com",  // login/auth flow
-        "https://auth.snapchat.com",      // SSO auth
-        "https://snap.com/auth",          // auth redirects
-        "https://cf-st.sc-cdn.net",       // static assets (CSS/JS/fonts)
-        "https://bolt-gcdn.sc-cdn.net",   // CDN assets
-        "https://s.sc-cdn.net",           // CDN assets
-        "https://web-chat.snapchat.com"   // chat websocket/API
-    );
-
-    /**
-     * Blocked path segments - even within allowed domains, block these paths.
+     * Blocked path segments in navigations. We use a blacklist approach
+     * because Snapchat's auth flow touches many domains and a whitelist
+     * is too fragile.
      */
     private static final List<String> BLOCKED_PATHS = Arrays.asList(
         "/discover",
@@ -66,14 +48,11 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Full-screen, edge-to-edge
-        getWindow().setFlags(
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        );
-
         webView = new WebView(this);
         setContentView(webView);
+
+        // Enable remote debugging via chrome://inspect on desktop Chrome
+        WebView.setWebContentsDebuggingEnabled(true);
 
         requestAppPermissions();
         configureWebView();
@@ -83,7 +62,9 @@ public class MainActivity extends Activity {
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
-        webView.loadUrl(SNAPCHAT_WEB_URL);
+        // Try the web app directly; if not logged in the WebViewClient
+        // will detect the redirect to the homepage and send to login instead.
+        webView.loadUrl(WEB_APP_URL);
     }
 
     private void configureWebView() {
@@ -94,61 +75,74 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        // Pretend to be Chrome so Snapchat serves the full web experience
-        String chromeUA = "Mozilla/5.0 (Linux; Android 14) "
+        // Desktop Chrome UA - Snapchat web requires a desktop browser
+        String desktopUA = "Mozilla/5.0 (X11; Linux x86_64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) "
-            + "Chrome/122.0.0.0 Mobile Safari/537.36";
-        settings.setUserAgentString(chromeUA);
+            + "Chrome/122.0.0.0 Safari/537.36";
+        settings.setUserAgentString(desktopUA);
 
         webView.setWebViewClient(new SnapCleanWebViewClient());
         webView.setWebChromeClient(new SnapCleanChromeClient());
     }
 
-    /**
-     * URL filter - the heart of the content blocking.
-     */
-    private boolean isUrlAllowed(String url) {
+    private boolean isUrlBlocked(String url) {
         if (url == null) return false;
-
-        // Check blocked paths first (these override allowed prefixes)
         String lowerUrl = url.toLowerCase();
         for (String blocked : BLOCKED_PATHS) {
             if (lowerUrl.contains(blocked)) {
-                return false;
-            }
-        }
-
-        // Check against whitelist
-        for (String prefix : ALLOWED_PREFIXES) {
-            if (lowerUrl.startsWith(prefix)) {
                 return true;
             }
         }
-
-        // Allow sc-cdn.net subdomains broadly (media/assets)
-        if (lowerUrl.contains(".sc-cdn.net")) {
-            return true;
-        }
-
         return false;
     }
+
+    /**
+     * JS to inject before page scripts run, making this WebView look
+     * like real desktop Chrome to Snapchat's detection.
+     */
+    private static final String CHROME_SPOOF_JS =
+        "if (!window.chrome) {"
+        + "  window.chrome = {"
+        + "    app: { isInstalled: false, getIsInstalled: function(){return false;}, getDetails: function(){}, installState: function(){} },"
+        + "    runtime: { connect: function(){}, sendMessage: function(){} },"
+        + "    csi: function(){},"
+        + "    loadTimes: function(){}"
+        + "  };"
+        + "}"
+        + "Object.defineProperty(navigator, 'plugins', {"
+        + "  get: function() { return [1,2,3]; }"
+        + "});";
 
     private class SnapCleanWebViewClient extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             String url = request.getUrl().toString();
-            if (isUrlAllowed(url)) {
-                return false; // let WebView handle it
+            if (isUrlBlocked(url)) {
+                return true; // block navigation
             }
-            // Blocked - silently ignore
-            return true;
+            // If Snapchat's JS redirects to the homepage (not logged in),
+            // intercept and go to login instead.
+            if (url.startsWith("https://www.snapchat.com/?") || url.equals("https://www.snapchat.com/")) {
+                view.loadUrl(LOGIN_URL);
+                return true;
+            }
+            // After login, if redirected to download page, go to web app
+            if (url.contains("snapchat.com/download")) {
+                view.loadUrl(WEB_APP_URL);
+                return true;
+            }
+            return false; // allow everything else
+        }
+
+        @Override
+        public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            super.onPageStarted(view, url, favicon);
+            view.evaluateJavascript(CHROME_SPOOF_JS, null);
         }
 
         @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
-            // Inject CSS to hide any Discover/Spotlight UI elements that might
-            // appear. This is a defense-in-depth layer on top of URL blocking.
             injectContentBlocker(view);
         }
     }
